@@ -16,7 +16,7 @@
 %                 date. default: false.
 %
 % Returns:
-%     outPath   - path to the exported directory.
+%     outPath   - path to the output directory.
 % 
 % See also:
 %     1. http://www.mathworks.com/matlabcentral/fileexchange/34024-get-rid-of-the-white-margin-in-saveas-output/
