@@ -12,7 +12,7 @@
 %     saveFunc  - function with the following parameters: (figure, outFile)
 %                 default: @saveTightFigure [1].
 %     isVerbose - set to true for verbose mode. default: false.
-%     isForced  - set to true to save all figures ignoring the midification
+%     isForced  - set to true to save all figures ignoring the modification
 %                 date. default: false.
 %
 % Returns:
