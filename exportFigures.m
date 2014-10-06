@@ -1,4 +1,5 @@
-% EXPORT_FIGURES - Recursively convert all figure files in a given directory.
+% EXPORT_FIGURES - Recursively convert all figures in a given directory to image while preserving
+% directory structure.
 %
 % Usage:    savedPath = exportFigures(basePath, figDir, ext, saveDir, isVerbose, isForced)
 %
@@ -70,7 +71,7 @@ for i = 1:numel(files)
         end
     end
 
-    fig=openfig(files(i).name, 'new', 'invisible');
+    fig = openfig(files(i).name, 'new', 'invisible');
     saveFunc(fig, outFile);
     close(fig);
 
