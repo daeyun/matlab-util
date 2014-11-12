@@ -46,7 +46,7 @@ if isVerbose
 end
 
 for i = 1:numel(files)
-    midPath = regexp(files(i).name, sprintf('%s/(.+?)/(.+?)\\.fig', ...
+    midPath = regexp(files(i).name, sprintf('%s/(.+?)\\.fig', ...
         figuresPath), 'once', 'ignorecase', 'tokens');
     outDir = fullfile(outPath, midPath{1});
     outFile = fullfile(outDir, [midPath{2} '.' ext]);
