@@ -1,8 +1,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
 //  Name:      renderDepthMex.cc
-//  Purpose:   Renders an inverse depth map given a triangle mesh and 3x4 camera
-//             matrix P = K*[R t].
+//  Purpose:   Renders an inverse depth map given a triangle mesh (0-indexed)
+//             and 3x4 camera matrix P = K*[R t].
+//             This can also be used to generate a silhouette from mesh.
 //  Author:    Daeyun Shin <dshin11@illinois.edu>
 //  Created:   04.05.2015
 //  Modified:  10.17.2015
