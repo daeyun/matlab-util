@@ -1,11 +1,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
-//  Name:        mexutil.h
-//  Purpose:     Macros and helper functions for creating MATLAB MEX-files.
-//  Author:      Daeyun Shin <dshin11@illinois.edu>
-//  Created:     01.15.2015
-//  Modified:    04.05.2015
-//  Version:     0.1.2
+//  Name:      renderDepthMex.cc
+//  Purpose:   Renders an inverse depth map given a triangle mesh (0-indexed)
+//             and 3x4 camera matrix P = K*[R t].
+//             This can also be used to generate a silhouette from mesh.
+//  Author:    Daeyun Shin <dshin11@illinois.edu>
+//  Created:   04.05.2015
+//  Modified:  10.17.2015
+//  Version:   0.2
 //
 //  This Source Code Form is subject to the terms of the Mozilla Public
 //  License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,260 +15,237 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-#pragma once
+/*
+arg0: vertices  n by 3
+arg1: faces     n by 3
+arg2: imSize    1 by 2
+arg3: P         3 by 4
+
+Outputs and image of inverse depth values d(y,x) such that inv(K)*[x y 1]/d(y,x)
+restores the camera coordinates.
+
+Example:
+fv = isosurface(X, Y, Z, V, 0.5);
+im = renderDepthMex(fv.vertices, fv.faces-1, [720 1280], K*[R t]);
+
+*/
 
 #include "mex.h"
-#include <string>
-#include <algorithm>
-#include <cctype>
+#include "mexutil.h"
 #include <vector>
-#include <sstream>
-#include <iostream>
+#include <cstdlib>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
-#ifndef N_LHS_VAR
-#define N_LHS_VAR nargout
-#endif
-#ifndef N_RHS_VAR
-#define N_RHS_VAR nargin
-#endif
-#ifndef MEX_COMPONENT_NAME
-#define MEX_COMPONENT_NAME "MATLAB"
-#endif
-
-#define BOLD(str) "<strong>" str "</strong>"
-#define ORANGE(str) "[\b" str "]\b"
-
-namespace mexutil {
-enum CompOp { EQ, GT, LT, NEQ, GE, LE };
-
-enum ArgType {
-  kDouble,
-  kSingle,
-  kStruct,
-  kLogical,
-  kChar,
-  kInt8,
-  kUint8,
-  kInt16,
-  kUint16,
-  kInt32,
-  kUint32
+struct Vertex {
+  Vertex() = default;
+  Vertex(double x, double y, double d) : x(x), y(y), d(d) {}
+  double x, y, d;
 };
 
-struct StructField {
-  std::string field_name;
-  ArgType type;
-  size_t dims[3];
-  void *value;
+struct Triangle {
+  Triangle() = default;
+  Triangle(const Vertex& a, const Vertex& b, const Vertex& c)
+      : a(a), b(b), c(c) {}
+  Vertex a, b, c;
 };
 
-struct MatlabStruct {
-  std::vector<StructField> fields;
+class Image {
+ public:
+  Image(double w, double h) : w_(w), h_(h), data_(w * h, 0) {}
+
+  double get(int x, int y) const { return data_[y + x * h_]; }
+
+  void set_depth(int x, int y, double d) {
+    if (d < 1e-5) {
+      return;
+    }
+
+    double idepth = 1 / d;
+    if (data_[y + x * h_] < idepth) {
+      data_[y + x * h_] = idepth;
+    }
+  }
+
+  int w() { return w_; }
+  int h() { return h_; }
+
+ private:
+  int w_, h_;
+  std::vector<double> data_;
 };
 
-void createStructArray(const std::vector<MatlabStruct> &structs, mxArray *&out,
-                       bool is_copy = true);
+int Round(double a) { return ((int)(a + 0.5)); }
 
-// Redirect stderr to a file or stringstream .
-void CaptureErrorMsg(std::stringstream &stderr_content);
-void CaptureErrorMsg(const std::string &filename);
-
-// Constructs the identifier token used in error messages.
-std::string MatlabIdStringFromFilename(std::string str);
-std::string FilenameFromPath(std::string str);
-
-// Retrieves the workspace global variable mexVerboseLevel (default: 1).
-int VerboseLevel();
-
-const int kDefaultVerboseLevel = 1;
-const std::string kFilename = FilenameFromPath(__FILE__);
-const std::string kFunctionIdentifier = MatlabIdStringFromFilename(kFilename);
-const int kVerboseLevel = VerboseLevel();
-
-// Force pass-by-value behavior to prevent accidentally modifying shared
-// memory content in-place. Undocumented.
-// http://undocumentedmatlab.com/blog/matlab-mex-in-place-editing
-extern "C" bool mxUnshareArray(mxArray *array_ptr, bool noDeepCopy);
-
-// Copy and transpose.
-template <size_t nrows_in, typename T>
-void Transpose(const std::vector<T> &in, T *out);
-
-// Useful when zero-based indexing is used.
-template <size_t nrows_in, typename T>
-void TransposeAddOne(const std::vector<T> &in, T *out);
-
-mxArray *UnshareArray(int index, const mxArray *prhs[]) {
-  mxArray *unshared = const_cast<mxArray *>(prhs[index]);
-  mxUnshareArray(unshared, true);
-  return unshared;
+// Given x_im = x_i/d_i in p_i = (x_i, y_i, d_i) and two points that form a line
+// that contains p_i, find d_i;
+double FindDepthFrom2dX(double x2d, const Vertex& start, const Vertex& end) {
+  double x0 = start.x * start.d, x1 = end.x * end.d, d0 = start.d, d1 = end.d;
+  return (x0 * d1 - x1 * d0) / (x2d * d1 - x2d * d0 - x1 + x0);
 }
 
-bool is_invalid_id_char(char ch) { return !(isalnum((int)ch) || ch == '_'); };
-
-std::string MatlabIdStringFromFilename(std::string str) {
-  (void)(MatlabIdStringFromFilename);
-  if (int i = str.find_first_of('.')) str = str.substr(0, i);
-  if (!isalpha(str[0])) str = "mex_" + str;
-  std::replace_if(str.begin(), str.end(), is_invalid_id_char, '_');
-  return str;
+double FindDepthFrom2dY(double y2d, const Vertex& start, const Vertex& end) {
+  double y0 = start.y * start.d, y1 = end.y * end.d, d0 = start.d, d1 = end.d;
+  return (y0 * d1 - y1 * d0) / (y2d * d1 - y2d * d0 - y1 + y0);
 }
 
-std::string FilenameFromPath(std::string str) {
-  (void)(FilenameFromPath);
-  if (int i = str.find_last_of('/')) str = str.substr(i + 1, str.length());
-  return str;
+void DrawVertLine(double fx, double fy1, double fy2, double fd1, double fd2,
+                  Image* im) {
+  if (fy2 - fy1 < 0.5) {
+    return;
+  }
+
+  int x = Round(fx), y1 = Round(fy1), y2 = Round(fy2);
+
+  if (x < 0 || y2 < 0 || x >= im->w() || y1 >= im->h()) {
+    return;
+  }
+
+  Vertex s(fx, fy1, fd1), e(fx, fy2, fd2);
+
+  for (int y = std::max(y1, 0); y <= std::min(y2, im->h() - 1); ++y) {
+    double w = FindDepthFrom2dY(y, s, e);
+    im->set_depth(x, y, w);
+  }
 }
 
-int VerboseLevel() {
-  (void)(VerboseLevel);
-  mxArray *ptr = mexGetVariable("global", "mexVerboseLevel");
-  if (ptr == NULL) return kDefaultVerboseLevel;
-  return mxGetScalar(ptr);
+void FillLeftFlatTriangle(const Vertex& v1, const Vertex& v2, const Vertex& v3,
+                          Image* im) {
+  double slope1 = (v1.y - v2.y) / (v1.x - v2.x);
+  double slope2 = (v1.y - v3.y) / (v1.x - v3.x);
+  double y1, y2, d1, d2;
+
+  for (double x = Round(v1.x); x >= v2.x; x--) {
+    y1 = v1.y - slope1 * (v1.x - x);
+    y2 = v1.y - slope2 * (v1.x - x);
+    d1 = FindDepthFrom2dX(x, v1, v2);
+    d2 = FindDepthFrom2dX(x, v1, v3);
+    DrawVertLine(x, y1, y2, d1, d2, im);
+  }
 }
 
-void CaptureErrorMsg(std::stringstream &stderr_content) {
-  std::cerr.rdbuf(stderr_content.rdbuf());
+void FillRightFlatTriangle(const Vertex& v1, const Vertex& v2, const Vertex& v3,
+                           Image* im) {
+  double slope1 = (v3.y - v1.y) / (v3.x - v1.x);
+  double slope2 = (v3.y - v2.y) / (v3.x - v2.x);
+  double y1, y2, d1, d2;
+
+  for (double x = Round(v3.x); x < v1.x; x++) {
+    y1 = v3.y - slope1 * (v3.x - x);
+    y2 = v3.y - slope2 * (v3.x - x);
+    d1 = FindDepthFrom2dX(x, v3, v1);
+    d2 = FindDepthFrom2dX(x, v3, v2);
+    DrawVertLine(x, y1, y2, d1, d2, im);
+  }
 }
 
-#define IGNORE_RESULT(fn) if (fn) 0;
-void CaptureErrorMsg(const std::string &filename) {
-  IGNORE_RESULT(freopen(filename.c_str(), "a", stderr));
-}
+void DrawTriangle(const Vertex& a, const Vertex& b, const Vertex& c,
+                  Image* im) {
+  Vertex v1(a), v2(b), v3(c);
 
-template <size_t nrows_in, typename T>
-void Transpose(const std::vector<T> &in, T *out) {
-  const size_t ncols_in = in.size() / nrows_in;
-#pragma omp parallel for
-  for (size_t i = 0; i < in.size(); i += nrows_in) {
-    for (size_t j = 0; j < nrows_in; ++j) {
-      *(out + (i / nrows_in) + ncols_in * j) = in[i + j];
+  if (v1.x < v2.x) std::swap(v1, v2);
+  if (v1.x < v3.x) std::swap(v1, v3);
+  if (v2.x < v3.x) std::swap(v2, v3);
+
+  if (v2.x == v3.x) {
+    if (v2.y > v3.y) {
+      FillLeftFlatTriangle(v1, v3, v2, im);
+    } else {
+      FillLeftFlatTriangle(v1, v2, v3, im);
+    }
+  } else if (v1.x == v2.x) {
+    if (v1.y > v2.y) {
+      FillRightFlatTriangle(v2, v1, v3, im);
+    } else {
+      FillRightFlatTriangle(v1, v2, v3, im);
+    }
+  } else {
+    Vertex v4;
+    v4.x = v2.x;
+    double slope = (v3.y - v1.y) / (v1.x - v3.x);
+    v4.y = v3.y - (v4.x - v3.x) * slope;
+    v4.d = FindDepthFrom2dX(v4.x, v1, v3);
+
+    if (v2.y > v4.y) {
+      FillLeftFlatTriangle(v1, v4, v2, im);
+      FillRightFlatTriangle(v4, v2, v3, im);
+    } else {
+      FillLeftFlatTriangle(v1, v2, v4, im);
+      FillRightFlatTriangle(v2, v4, v3, im);
     }
   }
 }
 
-template <size_t nrows_in, typename T>
-void TransposeAddOne(const std::vector<T> &in, T *out) {
-  const size_t ncols_in = in.size() / nrows_in;
-#pragma omp parallel for
-  for (size_t i = 0; i < in.size(); i += nrows_in) {
-    for (size_t j = 0; j < nrows_in; ++j) {
-      *(out + (i / nrows_in) + ncols_in * j) = in[i + j] + 1;
-    }
+void RenderDepthImage(const std::vector<Triangle>& triangles, Image* im) {
+  for (const auto& triangle : triangles) {
+    DrawTriangle(triangle.a, triangle.b, triangle.c, im);
   }
 }
 
-// e.g. LEVEL(2, MPRINTF("Not printed if logging level is less than 2."))
-#define LEVEL(verbose_level, expr)            \
-  {                                           \
-    if (kVerboseLevel >= verbose_level) expr; \
+void mexFunction(int nargout, mxArray* out[], int nargin, const mxArray* in[]) {
+  using namespace mexutil;
+
+  N_IN(4);
+  N_OUT(1);
+
+  for (int i = 0; i < 4; ++i) {
+    M_ASSERT(mxGetNumberOfDimensions(in[i]) == 2);
   }
 
-// Construct an identifier string e.g.  MATLAB:mexutil:myErrorIdentifier
-#define MEX_IDENTIFIER(mnemonic)                               \
-  (std::string(MEX_COMPONENT_NAME ":") + kFunctionIdentifier + \
-   std::string(":" mnemonic)).c_str()
+  const mwSize* dims0 = mxGetDimensions(in[0]);
+  M_ASSERT(dims0[0] >= 1);
+  M_ASSERT(dims0[1] == 3);
 
-// Assert number of input variables.
-#define N_IN_RANGE(min, max)                                                \
-  {                                                                         \
-    if (N_RHS_VAR < min || N_RHS_VAR > max) {                               \
-      mexErrMsgIdAndTxt(MEX_IDENTIFIER("InputSizeError"),                   \
-                        "Number of inputs must be between %d and %d.", min, \
-                        max);                                               \
-    }                                                                       \
+  const mwSize* dims1 = mxGetDimensions(in[1]);
+  M_ASSERT(dims1[0] >= 1);
+  M_ASSERT(dims1[1] == 3);
+
+  const mwSize* dims2 = mxGetDimensions(in[2]);
+  M_ASSERT(dims2[0] == 1);
+  M_ASSERT(dims2[1] == 2);
+
+  const mwSize* dims3 = mxGetDimensions(in[3]);
+  M_ASSERT(dims3[0] == 3);
+  M_ASSERT(dims3[1] == 4);
+
+  int num_vertices = dims0[0];
+  int num_faces = dims1[0];
+
+  double* fv_v = mxGetPr(in[0]);
+  double* fv_f = mxGetPr(in[1]);
+  double* imsize = mxGetPr(in[2]);
+  double* P = mxGetPr(in[3]);
+
+  std::vector<Vertex> vertices;
+  vertices.reserve(num_vertices);
+  for (int i = 0; i < num_vertices; ++i) {
+    Vertex v;
+    double xyz[3];
+    for (int j = 0; j < 3; ++j) {
+      xyz[j] = P[j + 0 * 3] * fv_v[i + 0 * num_vertices] +
+               P[j + 1 * 3] * fv_v[i + 1 * num_vertices] +
+               P[j + 2 * 3] * fv_v[i + 2 * num_vertices] + P[j + 3 * 3];
+    }
+    vertices.push_back({xyz[0] / xyz[2], xyz[1] / xyz[2], xyz[2]});
   }
 
-// Assert number of output variables.
-#define N_OUT_RANGE(min, max)                                                \
-  {                                                                          \
-    if (N_LHS_VAR < min || N_LHS_VAR > max) {                                \
-      mexErrMsgIdAndTxt(MEX_IDENTIFIER("OutputSizeError"),                   \
-                        "Number of outputs must be between %d and %d.", min, \
-                        max);                                                \
-    }                                                                        \
+  std::vector<Triangle> triangles;
+  vertices.reserve(num_faces);
+  for (int i = 0; i < num_faces; ++i) {
+    triangles.push_back({vertices[fv_f[i + 0 * num_faces]],
+                         vertices[fv_f[i + 1 * num_faces]],
+                         vertices[fv_f[i + 2 * num_faces]]});
   }
 
-#define N_IN(num)                                             \
-  {                                                           \
-    if (N_RHS_VAR != num) {                                   \
-      mexErrMsgIdAndTxt(MEX_IDENTIFIER("InputSizeError"),     \
-                        "Number of inputs must be %d.", num); \
-    }                                                         \
+  Image im(imsize[1], imsize[0]);
+
+  RenderDepthImage(triangles, &im);
+
+  mwSize out_dims[2] = {(mwSize)imsize[0], (mwSize)imsize[1]};
+  out[0] = mxCreateNumericArray(2, out_dims, mxDOUBLE_CLASS, mxREAL);
+  double* out_im = mxGetPr(out[0]);
+
+  for (int x = 0; x < im.w(); ++x) {
+    for (int y = 0; y < im.h(); ++y) {
+      out_im[y + x * im.h()] = im.get(x, y);
+    }
   }
-
-#define N_OUT(num)                                             \
-  {                                                            \
-    if (N_LHS_VAR != num) {                                    \
-      mexErrMsgIdAndTxt(MEX_IDENTIFIER("OutputSizeError"),     \
-                        "Number of outputs must be %d.", num); \
-    }                                                          \
-  }
-
-#define VAR(name)                                                          \
-  {                                                                        \
-    std::ostringstream val_str;                                            \
-    val_str << name;                                                       \
-    mexutil::DisplayVariable(#name, val_str.str(), sizeof(name),           \
-                             (void *)&name, __FILE__, __LINE__, __func__); \
-  }
-
-#define CHECK(name)                                                           \
-  {                                                                           \
-    std::ostringstream val_str;                                               \
-    val_str << name;                                                          \
-    mexutil::DisplayVariable(#name, val_str.str(), sizeof(name), 0, __FILE__, \
-                             __LINE__, __func__);                             \
-  }
-
-// Print message to MATLAB console.
-// e.g.MPRINTF(BOLD("%d"), argc);
-#define MPRINTF(...)           \
-  {                            \
-    mexPrintf(__VA_ARGS__);    \
-    mexEvalString("drawnow;"); \
-  }
-
-// Display error and exit.
-#define ERR_EXIT(errname, ...) \
-  { mexErrMsgIdAndTxt(MEX_IDENTIFIER(errname), ##__VA_ARGS__); }
-
-// Macros starting with an underscore are internal.
-#define _M_ASSERT(condition)                                                 \
-  {                                                                          \
-    if (!(condition)) {                                                      \
-      MPRINTF("[ERROR] (%s:%d %s) ", kFilename.c_str(), __LINE__, __func__); \
-      mexErrMsgTxt("assertion " #condition " failed\n");                     \
-    }                                                                        \
-  }
-
-#define _M_ASSERT_MSG(condition, msg)                                        \
-  {                                                                          \
-    if (!(condition)) {                                                      \
-      MPRINTF("[ERROR] (%s:%d %s) ", kFilename.c_str(), __LINE__, __func__); \
-      mexErrMsgIdAndTxt(MEX_IDENTIFIER("AssertionError"),                    \
-                        "assertion " #condition " failed\n%s\n", msg);       \
-    }                                                                        \
-  }
-
-#define _CHOOSE_MACRO(a, x, func, ...) func
-
-#define M_ASSERT(condition, ...)                                        \
-  _CHOOSE_MACRO(, ##__VA_ARGS__, _M_ASSERT_MSG(condition, __VA_ARGS__), \
-                _M_ASSERT(condition))
-
-#define M_ASSERT_FMT(condition, fmt, ...)                                    \
-  {                                                                          \
-    if (!(condition)) {                                                      \
-      MPRINTF("[ERROR] (%s:%d %s) ", kFilename.c_str(), __LINE__, __func__); \
-      mexErrMsgIdAndTxt(MEX_IDENTIFIER("AssertionError"),                    \
-                        "assertion " #condition " failed\n" fmt "\n",        \
-                        ##__VA_ARGS__);                                      \
-    }                                                                        \
-  }
-
-}  // end of namespace mexutil
+}
