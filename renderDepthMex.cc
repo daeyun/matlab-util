@@ -21,9 +21,13 @@ arg1: faces     n by 3
 arg2: imSize    1 by 2
 arg3: P         3 by 4
 
+Outputs and image of inverse depth values d(x,y) such that inv(K)*[x y 1]/d(x,y)
+restores the camera coordinates.
+
 Example:
 fv = isosurface(X, Y, Z, V, 0.5);
-im = renderDepthMex(fv.vertices, fv.faces, [720 1280], K*[R t]);
+im = renderDepthMex(fv.vertices, fv.faces-1, [720 1280], K*[R t]);
+
 */
 
 #include "mex.h"
